@@ -1,6 +1,9 @@
 from fastmcp.server import FastMCP
 import plivo
 import os
+import json as _trace_json
+import time as _trace_time
+import functools as _trace_ft
 
 # Your Plivo credentials
 PLIVO_AUTH_ID = os.environ.get("PLIVO_AUTH_ID","")
@@ -11,6 +14,34 @@ client = plivo.RestClient(auth_id=PLIVO_AUTH_ID, auth_token=PLIVO_AUTH_TOKEN)
 
 # Create MCP server
 mcp = FastMCP("PlivoMCP")
+
+
+def _trace(event):
+    """Append one JSONL line per tool invocation to $PRMCP_TRACE_PATH."""
+    try:
+        with open(os.environ.get("PRMCP_TRACE_PATH", "/tmp/prmcp-trace.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(_trace_json.dumps(event, default=str) + "\n")
+    except OSError:
+        pass
+
+
+_orig_tool = mcp.tool
+def _traced_tool(*dargs, **dkwargs):
+    real = _orig_tool(*dargs, **dkwargs)
+    def wrap(fn):
+        @_trace_ft.wraps(fn)
+        def inner(*a, **kw):
+            ts = _trace_time.strftime("%Y-%m-%dT%H:%M:%SZ", _trace_time.gmtime())
+            try:
+                result = fn(*a, **kw)
+                _trace({"ts": ts, "tool": fn.__name__, "args": kw, "status": "ok"})
+                return result
+            except Exception as e:
+                _trace({"ts": ts, "tool": fn.__name__, "args": kw, "status": "error", "error": str(e)})
+                raise
+        return real(inner)
+    return wrap
+mcp.tool = _traced_tool
 
 @mcp.tool()
 def send_sms(from_number : str, to_number: str, text: str) -> dict:
